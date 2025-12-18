@@ -504,8 +504,8 @@ const App: React.FC = () => {
               <div className="w-12 h-12 border-2 border-black flex items-center justify-center bg-white shadow-[4px_4px_0px_0px_#000]">
                 <Sparkles className="w-6 h-6 text-black" />
               </div>
-              <div className="font-mono text-xs uppercase max-w-[200px] leading-tight text-gray-500">
-                System analyzes tone, impact verbs, and cliché density.
+              <div className="font-mono text-xs uppercase max-w-[240px] leading-tight text-gray-500">
+                Tip: Pasted text gives more accurate scores than PDF uploads
               </div>
             </div>
             <div className="flex w-full md:w-auto gap-3">
@@ -528,9 +528,9 @@ const App: React.FC = () => {
                 disabled={status === AnalysisStatus.LOADING}
                 className="w-full md:w-auto text-xl px-8 py-5"
               >
-                Upload Resume
+                Upload PDF
               </Button>
-              <input ref={fileInputRef} onChange={handleFileChange} type="file" accept=".pdf,.docx,.txt" hidden />
+              <input ref={fileInputRef} onChange={handleFileChange} type="file" accept=".pdf" hidden />
             </div>
           </div>
 
@@ -593,9 +593,15 @@ const App: React.FC = () => {
                   </div>
                 </Card>
 
+
                 {/* Description Text */}
                 <div className="p-6 border-l-4 border-black bg-white/50">
                   <p className="text-lg font-medium leading-tight">{result.description}</p>
+                </div>
+
+                {/* AI Variance Disclaimer */}
+                <div className="px-4 py-3 bg-yellow-50 border-l-4 border-yellow-500 text-sm font-mono text-gray-700">
+                  <span className="font-bold">⚠️ Note:</span> AI-generated scores may vary ±10 points and content changes with each analysis. This reflects how different recruiters might view your resume.
                 </div>
 
                 {/* Share Card Button */}
@@ -1010,7 +1016,7 @@ const App: React.FC = () => {
                           {revealedHint === idx ? 'HIDE HINT' : 'REVEAL HINT'}
                         </button>
                         {revealedHint === idx && (
-                          <div className="mt-2 text-sm text-gray-600 bg-gray-50 p-3 rounded italic border-l-2 border-[#FF4D00]">
+                          <div className="mt-2 text-sm text-gray-600 bg-gray-50 p-3 rounded italic border-l-2 border-[#FF4D00] break-words">
                             {q.hint}
                           </div>
                         )}
