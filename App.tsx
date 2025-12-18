@@ -321,7 +321,13 @@ const App: React.FC = () => {
                       .map(([k, v]) => {
                         if (!v?.suggested?.length) return '';
                         const title = k.charAt(0).toUpperCase() + k.slice(1);
-                        return `< div style = "margin-bottom:20px;" ><strong style="font-size:16px;color:#059669;">${title}</strong><ul style="margin:8px 0 0 0; padding-left:20px; line-height:1.6;">${v.suggested.map(s => `<li style="margin-bottom:4px;">${s}</li>`).join('')}</ul></div > `;
+                        // Escape HTML entities in AI content to prevent raw HTML display
+                        const escapeHtml = (text: string) => text
+                          .replace(/&/g, '&amp;')
+                          .replace(/</g, '&lt;')
+                          .replace(/>/g, '&gt;')
+                          .replace(/"/g, '&quot;');
+                        return `<div style="margin-bottom:20px;"><strong style="font-size:16px;color:#059669;">${title}</strong><ul style="margin:8px 0 0 0; padding-left:20px; line-height:1.6;">${v.suggested.map(s => `<li style="margin-bottom:4px;">${escapeHtml(s)}</li>`).join('')}</ul></div>`;
                       })
                       .filter(Boolean)
                       .join('') || '<p class="text-gray-500">No improvements generated yet.</p>'

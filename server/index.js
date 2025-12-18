@@ -41,10 +41,50 @@ function getNextGroqKey() {
 // Groq API caller with key rotation
 // Models to try in order of preference
 const GROQ_MODELS = [
+  'openai/gpt-oss-120b',
   process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
   'llama-3.1-8b-instant',
   'mixtral-8x7b-32768'
 ];
+
+// Helper function to strip HTML tags from text
+function stripHtmlTags(text) {
+  if (typeof text !== 'string') return text;
+  // Remove all HTML-like tags including those with attributes
+  let cleaned = text
+    .replace(/<\s*div[^>]*>/gi, '')
+    .replace(/<\s*\/\s*div\s*>/gi, '')
+    .replace(/<\s*p[^>]*>/gi, '')
+    .replace(/<\s*\/\s*p\s*>/gi, '')
+    .replace(/<\s*span[^>]*>/gi, '')
+    .replace(/<\s*\/\s*span\s*>/gi, '')
+    .replace(/<\s*br\s*\/?>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned;
+}
+
+// Helper function to clean AI response from HTML tags
+function cleanAIResponse(data) {
+  if (!data || typeof data !== 'object') return data;
+
+  // Clean sections
+  if (data.sections) {
+    Object.keys(data.sections).forEach(sectionKey => {
+      const section = data.sections[sectionKey];
+
+      if (section && section.suggested && Array.isArray(section.suggested)) {
+        section.suggested = section.suggested.map(s => stripHtmlTags(s));
+      }
+      if (section && section.issues && Array.isArray(section.issues)) {
+        section.issues = section.issues.map(i => stripHtmlTags(i));
+      }
+    });
+  }
+
+  return data;
+}
 
 // Groq API caller with key rotation, model fallback, and retries
 async function callGroq(messages) {
@@ -170,7 +210,7 @@ app.post('/analyze', async (req, res) => {
         role: 'system',
         content: `${systemPrompt}
 
-CRITICAL OUTPUT RULES: Output ONLY valid JSON. ALL content MUST be on ONE SINGLE LINE. NO newlines, NO markdown, NO explanations. The JSON must be directly parsable.
+CRITICAL OUTPUT RULES: Output ONLY valid JSON. ALL content MUST be on ONE SINGLE LINE. NO newlines, NO markdown, NO explanations. The JSON must be directly parsable. ⚠️ NEVER use HTML tags (<div>, <p>, etc.) in ANY field - use ONLY plain text.
 
 NAME EXTRACTION (MANDATORY): Extract the candidate's full name from the FIRST visible line or header. Look for patterns like "Name:", email headers, or a standalone name at the top. If absolutely no name is detectable, use "Unknown".
 
@@ -199,7 +239,8 @@ For each section (summary, experience, projects, education, skills, certificatio
 3. NEVER remove specific details to make generic statements
 4. KEEP the original structure but improve the WORDING and ACTION VERBS
 5. Add impact language WITHOUT making up numbers (use phrases like "resulting in improved performance" instead of fake "~30% improvement")
-${jobDescription ? '6. TAILOR wording to match the Job Description keywords/tone where honest and applicable.' : ''}
+6. ⚠️ ABSOLUTELY NO HTML TAGS: Do NOT use <div>, <p>, <span>, <br>, or ANY markup. Output ONLY plain text.
+${jobDescription ? '7. TAILOR wording to match the Job Description keywords/tone where honest and applicable.' : ''}
 
 KEYWORD GAP ANALYSIS:
 ${jobDescription ? 'Identify top 3-5 HARD SKILLS or CERTIFICATIONS explicitly mentioned in the JD that are completely MISSING from the resume. List them as "missingKeywords".' : 'Do NOT include "missingKeywords" field if no Job Description is provided.'}
@@ -227,6 +268,8 @@ ORIGINAL: "Web Development Intern | Prodigy InfoTech Aug 2024 – Sept 2024. Sup
 
 ✅ GOOD (keeps details, improves wording): "Web Development Intern | Prodigy InfoTech (Aug–Sept 2024): Engineered responsive web interfaces using HTML, CSS, and JavaScript; collaborated with design team to optimize user experience and resolve cross-browser compatibility issues"
 
+CRITICAL: ALL suggested rewrites MUST be PLAIN TEXT ONLY. NO HTML tags, NO <div>, NO <p>, NO markup. Just clean, readable text.
+
 INTERVIEW QUESTIONS (THE INTERROGATOR):
 Act as a SKEPTICAL HIRING MANAGER looking at the specific projects and skills listed. Generate 3 TARGETED technical interview questions to test their knowledge.
 - Rules: NO generic questions ("What is your weakness?"). Questions MUST reference specific technologies/projects from the resume (e.g. "You used MongoDB for the e-commerce app; how did you handle data consistency?").
@@ -242,7 +285,8 @@ JSON FORMAT (EXACT KEYS):
     ];
 
     const data = await callAI(messages);
-    res.json({ ...data, sourceText: resumeText });
+    const cleanedData = cleanAIResponse(data);
+    res.json({ ...cleanedData, sourceText: resumeText });
 
   } catch (error) {
     console.error("Analysis Error:", error);
@@ -387,7 +431,8 @@ JSON FORMAT (EXACT KEYS):
     ];
 
     const data = await callAI(messages);
-    res.json({ ...data, sourceText: extractedText });
+    const cleanedData = cleanAIResponse(data);
+    res.json({ ...cleanedData, sourceText: extractedText });
   } catch (error) {
     console.error('Upload Analyze Error:', error);
     res.status(500).json({ error: 'Failed to analyze uploaded file.' });
