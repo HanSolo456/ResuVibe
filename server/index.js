@@ -6,7 +6,6 @@ import mammoth from 'mammoth';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,10 +22,6 @@ app.use(express.json({ limit: '2mb' }));
 const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
 });
-
-// Gemini Setup
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-const genAI = GOOGLE_API_KEY ? new GoogleGenerativeAI(GOOGLE_API_KEY) : null;
 
 // Groq Setup - Multiple keys for rotation
 const GROQ_API_KEYS = (process.env.GROQ_API_KEYS || '').split(',').filter(k => k.trim());
@@ -137,59 +132,12 @@ async function callGroq(messages) {
   throw new Error(`All Groq keys and available models failed.`);
 }
 
+// Main AI caller - Uses Groq exclusively
 async function callAI(messages) {
-  // Try Gemini first (if configured)
-  if (genAI && GOOGLE_API_KEY) {
-    try {
-      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-
-      const contents = messages
-        .filter(m => m.role === 'user' || m.role === 'assistant')
-        .map(m => ({
-          role: m.role === 'user' ? 'user' : 'model',
-          parts: [{ text: m.content }]
-        }));
-
-      const result = await model.generateContent({
-        contents,
-        generationConfig: {
-          temperature: 0.7,
-          topP: 0.95,
-          topK: 40,
-        }
-      });
-
-      const text = result.response.text();
-      let cleanedText = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-      cleanedText = cleanedText.replace(/\n\s*/g, ' ').replace(/\s+/g, ' ');
-
-      let data;
-      try {
-        data = JSON.parse(cleanedText);
-      } catch (e) {
-        const match = cleanedText.match(/\{[\s\S]*\}/);
-        if (match) {
-          let cleaned = match[0].replace(/\n\s*/g, ' ').replace(/\s+/g, ' ');
-          data = JSON.parse(cleaned);
-        } else {
-          throw new Error(`Invalid JSON from Gemini: ${cleanedText}`);
-        }
-      }
-      console.log('✅ Using Gemini API');
-      return data;
-    } catch (geminiError) {
-      // If Gemini fails with quota error, fallback to Groq
-      if (geminiError.status === 429) {
-        console.log('⚠️ Gemini quota exceeded, falling back to Groq...');
-        if (GROQ_API_KEYS.length > 0) {
-          return await callGroq(messages);
-        }
-      }
-      throw geminiError;
-    }
+  if (GROQ_API_KEYS.length === 0) {
+    throw new Error('No Groq API keys configured. Please set GROQ_API_KEYS in environment variables.');
   }
 
-  // If no Gemini or it failed, use Groq
   console.log('📡 Using Groq API');
   return await callGroq(messages);
 }
@@ -205,9 +153,9 @@ app.post('/analyze', async (req, res) => {
       });
     }
 
-    if (!GOOGLE_API_KEY && GROQ_API_KEYS.length === 0) {
+    if (!GROQ_API_KEYS || GROQ_API_KEYS.length === 0) {
       return res.status(500).json({
-        error: "Server misconfiguration: Set GOOGLE_API_KEY or GROQ_API_KEYS in .env"
+        error: "Server misconfiguration: Set GROQ_API_KEYS in .env"
       });
     }
 
