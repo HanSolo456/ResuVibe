@@ -266,8 +266,8 @@ app.post('/upload-analyze', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded.' });
     }
     const { jobDescription } = req.body;
-    if (!GOOGLE_API_KEY) {
-      return res.status(500).json({ error: 'Server misconfiguration: missing GOOGLE_API_KEY.' });
+    if (!GROQ_API_KEYS || GROQ_API_KEYS.length === 0) {
+      return res.status(500).json({ error: 'Server misconfiguration: Set GROQ_API_KEYS in .env' });
     }
 
     const { mimetype, buffer, originalname } = req.file;

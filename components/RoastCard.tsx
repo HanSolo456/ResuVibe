@@ -75,7 +75,7 @@ export const RoastCard: React.FC<RoastCardProps> = ({ result, aspectRatio, mode 
                         <div className="text-[180px] font-black leading-none tracking-tighter">
                             {result.score}
                         </div>
-                        <div className="text-4xl font-bold mt-2 opacity-60">/ 100</div>
+                        <div className="relative z-10 text-4xl font-bold mt-2 opacity-60">/ 100</div>
 
                         {/* Verdict Stamp */}
                         <div
