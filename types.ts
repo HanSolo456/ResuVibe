@@ -17,6 +17,13 @@ export interface ResumeAnalysis {
     certifications?: SectionFeedback;
   };
   sourceText?: string;
+  missingKeywords?: string[];
+  greenFlags?: string[];
+  redFlags?: string[];
+  interviewQuestions?: {
+    question: string;
+    hint: string;
+  }[];
 }
 
 export enum AnalysisStatus {

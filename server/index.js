@@ -6,6 +6,7 @@ import mammoth from 'mammoth';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,71 +24,203 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+// Gemini Setup
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+const genAI = GOOGLE_API_KEY ? new GoogleGenerativeAI(GOOGLE_API_KEY) : null;
+
+// Groq Setup - Multiple keys for rotation
+const GROQ_API_KEYS = (process.env.GROQ_API_KEYS || '').split(',').filter(k => k.trim());
 const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+let currentGroqKeyIndex = 0;
 
-async function callGroq(messages, responseFormat = { type: 'json_object' }) {
-  const response = await fetch(GROQ_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${GROQ_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      messages,
-      temperature: 0.7,
-      response_format: responseFormat
-    })
-  });
+function getNextGroqKey() {
+  if (GROQ_API_KEYS.length === 0) {
+    return null;
+  }
+  const key = GROQ_API_KEYS[currentGroqKeyIndex];
+  currentGroqKeyIndex = (currentGroqKeyIndex + 1) % GROQ_API_KEYS.length;
+  return key;
+}
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Groq error ${response.status}: ${err}`);
+// Groq API caller with key rotation
+// Models to try in order of preference
+const GROQ_MODELS = [
+  process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+  'llama-3.1-8b-instant',
+  'mixtral-8x7b-32768'
+];
+
+// Groq API caller with key rotation, model fallback, and retries
+async function callGroq(messages) {
+  if (GROQ_API_KEYS.length === 0) {
+    throw new Error('No Groq API keys available. Set GROQ_API_KEYS in .env');
   }
 
-  const payload = await response.json();
-  let text = payload?.choices?.[0]?.message?.content || '';
-  text = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-  text = text.replace(/\n\s*/g, ' ').replace(/\s+/g, ' ');
+  let attempt = 0;
+  // Total attempts = keys * models (approximate simple strategy: try all keys on model 1, then all keys on model 2...)
+  // But to keep it simple and avoid 9 loops:
+  // We'll try:
+  // 1. Current Model + All Keys
+  // 2. If all 429, Switch Model + All Keys
 
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch (e) {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (match) {
-      let cleaned = match[0].replace(/\n\s*/g, ' ').replace(/\s+/g, ' ');
-      data = JSON.parse(cleaned);
-    } else {
-      throw new Error(`Invalid JSON from model: ${text}`);
+  for (const model of GROQ_MODELS) {
+    console.log(`🤖 Trying model: ${model}`);
+
+    // Reset key index for new model to give fresh chance? Or just continue?
+    // Let's try attempting all keys for this model.
+    let keyAttempt = 0;
+    const maxKeyAttempts = GROQ_API_KEYS.length;
+
+    while (keyAttempt < maxKeyAttempts) {
+      const key = getNextGroqKey();
+      console.log(`   🔑 Key index ${currentGroqKeyIndex === 0 ? GROQ_API_KEYS.length - 1 : currentGroqKeyIndex - 1} (Model ${model})`);
+
+      try {
+        const response = await fetch(GROQ_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${key}`
+          },
+          body: JSON.stringify({
+            model: model,
+            messages,
+            temperature: 0.7,
+            response_format: { type: 'json_object' }
+          })
+        });
+
+        if (!response.ok) {
+          const err = await response.text();
+          if (response.status === 429) {
+            console.warn(`   ⚠️ Rate limit (429) on ${model}. Rotating key...`);
+            keyAttempt++;
+            continue;
+          }
+          throw new Error(`Groq error ${response.status}: ${err}`);
+        }
+
+        const payload = await response.json();
+        let text = payload?.choices?.[0]?.message?.content || '';
+        text = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+        text = text.replace(/\n\s*/g, ' ').replace(/\s+/g, ' ');
+
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          const match = text.match(/\{[\s\S]*\}/);
+          if (match) {
+            let cleaned = match[0].replace(/\n\s*/g, ' ').replace(/\s+/g, ' ');
+            data = JSON.parse(cleaned);
+          } else {
+            // Maybe try parsing as simple object if JSON format failed but text exists
+            throw new Error(`Invalid JSON from Groq: ${text}`);
+          }
+        }
+        console.log(`✅ Success with ${model}`);
+        return data;
+
+      } catch (error) {
+        if (error.message.includes('429')) {
+          keyAttempt++;
+          continue;
+        }
+        console.warn(`   ❌ Non-429 error on ${model}: ${error.message}`);
+        keyAttempt++; // Move to next key on error too? Or next model? let's try next key.
+      }
+    }
+    console.warn(`⚠️ All keys failed for model ${model}. Falling back to next model...`);
+  }
+
+  throw new Error(`All Groq keys and available models failed.`);
+}
+
+async function callAI(messages) {
+  // Try Gemini first (if configured)
+  if (genAI && GOOGLE_API_KEY) {
+    try {
+      const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+
+      const contents = messages
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .map(m => ({
+          role: m.role === 'user' ? 'user' : 'model',
+          parts: [{ text: m.content }]
+        }));
+
+      const result = await model.generateContent({
+        contents,
+        generationConfig: {
+          temperature: 0.7,
+          topP: 0.95,
+          topK: 40,
+        }
+      });
+
+      const text = result.response.text();
+      let cleanedText = text.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+      cleanedText = cleanedText.replace(/\n\s*/g, ' ').replace(/\s+/g, ' ');
+
+      let data;
+      try {
+        data = JSON.parse(cleanedText);
+      } catch (e) {
+        const match = cleanedText.match(/\{[\s\S]*\}/);
+        if (match) {
+          let cleaned = match[0].replace(/\n\s*/g, ' ').replace(/\s+/g, ' ');
+          data = JSON.parse(cleaned);
+        } else {
+          throw new Error(`Invalid JSON from Gemini: ${cleanedText}`);
+        }
+      }
+      console.log('✅ Using Gemini API');
+      return data;
+    } catch (geminiError) {
+      // If Gemini fails with quota error, fallback to Groq
+      if (geminiError.status === 429) {
+        console.log('⚠️ Gemini quota exceeded, falling back to Groq...');
+        if (GROQ_API_KEYS.length > 0) {
+          return await callGroq(messages);
+        }
+      }
+      throw geminiError;
     }
   }
-  return data;
+
+  // If no Gemini or it failed, use Groq
+  console.log('📡 Using Groq API');
+  return await callGroq(messages);
 }
 
 // POST /analyze - The main endpoint
 app.post('/analyze', async (req, res) => {
   try {
-    const { resumeText } = req.body;
+    const { resumeText, jobDescription } = req.body;
 
     if (!resumeText || resumeText.length < 50) {
-      return res.status(400).json({ 
-        error: "Resume text is too short. Please provide at least 50 characters." 
+      return res.status(400).json({
+        error: "Resume text is too short. Please provide at least 50 characters."
       });
     }
 
-    if (!GROQ_API_KEY) {
+    if (!GOOGLE_API_KEY && GROQ_API_KEYS.length === 0) {
       return res.status(500).json({
-        error: "Server misconfiguration: missing GROQ_API_KEY."
+        error: "Server misconfiguration: Set GOOGLE_API_KEY or GROQ_API_KEYS in .env"
       });
+    }
+
+    let systemPrompt = `You are "ResuVibe Recruiter AI" — a Gen-Z technical recruiter who screens resumes in under 10 seconds. Your job: Analyze how this resume FEELS to a recruiter, not just what it says.`;
+
+    if (jobDescription) {
+      systemPrompt += `\n\nCONTEXT: The candidate is applying for a specific job. You MUST evaluate the resume against the provided JOB DESCRIPTION.`;
     }
 
     const messages = [
       {
         role: 'system',
-        content: `You are "ResuVibe Recruiter AI" — a Gen-Z technical recruiter who screens resumes in under 10 seconds. Your job: Analyze how this resume FEELS to a recruiter, not just what it says.
+        content: `${systemPrompt}
 
 CRITICAL OUTPUT RULES: Output ONLY valid JSON. ALL content MUST be on ONE SINGLE LINE. NO newlines, NO markdown, NO explanations. The JSON must be directly parsable.
 
@@ -118,6 +251,25 @@ For each section (summary, experience, projects, education, skills, certificatio
 3. NEVER remove specific details to make generic statements
 4. KEEP the original structure but improve the WORDING and ACTION VERBS
 5. Add impact language WITHOUT making up numbers (use phrases like "resulting in improved performance" instead of fake "~30% improvement")
+${jobDescription ? '6. TAILOR wording to match the Job Description keywords/tone where honest and applicable.' : ''}
+
+KEYWORD GAP ANALYSIS:
+${jobDescription ? 'Identify top 3-5 HARD SKILLS or CERTIFICATIONS explicitly mentioned in the JD that are completely MISSING from the resume. List them as "missingKeywords".' : 'Do NOT include "missingKeywords" field if no Job Description is provided.'}
+
+BUZZWORD HEATMAP (EXACTLY 3-5 each):
+GREEN FLAGS: Extract 3-5 STRONG action-oriented phrases from the resume that show REAL impact. Look for:
+- Specific metrics/numbers (e.g., "Deployed to 10K users", "Reduced latency by 40%")
+- Leadership/ownership verbs (e.g., "Led team of 5", "Architected system")
+- Concrete deliverables (e.g., "Shipped to production", "Published research paper")
+BAD: ❌ "Worked on projects" GOOD: ✅ "Shipped 3 features to 50K users"
+
+RED FLAGS: Extract 3-5 WEAK/VAGUE buzzwords or phrases that should be removed. Look for:
+- Generic adjectives without proof (e.g., "Hard worker", "Passionate", "Detail-oriented")
+- Passive/weak verbs (e.g., "Responsible for", "Helped with", "Assisted in")
+- Meaningless corporate jargon (e.g., "Synergy", "Think outside the box", "Team player")
+BAD: ❌ "Optimized performance" (if no metric) GOOD: ✅ "Passionate" (generic fluff)
+
+EXAMPLE - BAD vs GOOD suggested rewrites:
 
 EXAMPLE - BAD vs GOOD suggested rewrites:
 
@@ -127,21 +279,26 @@ ORIGINAL: "Web Development Intern | Prodigy InfoTech Aug 2024 – Sept 2024. Sup
 
 ✅ GOOD (keeps details, improves wording): "Web Development Intern | Prodigy InfoTech (Aug–Sept 2024): Engineered responsive web interfaces using HTML, CSS, and JavaScript; collaborated with design team to optimize user experience and resolve cross-browser compatibility issues"
 
+INTERVIEW QUESTIONS (THE INTERROGATOR):
+Act as a SKEPTICAL HIRING MANAGER looking at the specific projects and skills listed. Generate 3 TARGETED technical interview questions to test their knowledge.
+- Rules: NO generic questions ("What is your weakness?"). Questions MUST reference specific technologies/projects from the resume (e.g. "You used MongoDB for the e-commerce app; how did you handle data consistency?").
+- Hint: Provide a short "Model Answer" logic or key talking point.
+
 JSON FORMAT (EXACT KEYS):
-{"name": string, "score": number (0-100 integer), "label": string, "description": string, "recruiterSnapshot": string, "overview": string, "sections": {"summary": {"issues": string[], "suggested": string[]}, "experience": {"issues": string[], "suggested": string[]}, "projects": {"issues": string[], "suggested": string[]}, "education": {"issues": string[], "suggested": string[]}, "skills": {"issues": string[], "suggested": string[]}, "certifications": {"issues": string[], "suggested": string[]}}, "roasts": [string, string, string, string], "improvements": [string, string, string]}`
+{"name": string, "score": number (0-100 integer), "label": string, "description": string, "recruiterSnapshot": string, "overview": string, "sections": {"summary": {"issues": string[], "suggested": string[]}, "experience": {"issues": string[], "suggested": string[]}, "projects": {"issues": string[], "suggested": string[]}, "education": {"issues": string[], "suggested": string[]}, "skills": {"issues": string[], "suggested": string[]}, "certifications": {"issues": string[], "suggested": string[]}}, "roasts": [string, string, string, string], "improvements": [string, string, string], "missingKeywords": [string, string, string], "greenFlags": [string, string, string], "redFlags": [string, string, string], "interviewQuestions": [{"question": string, "hint": string}, {"question": string, "hint": string}, {"question": string, "hint": string}]}`
       },
       {
         role: 'user',
-        content: `Resume Text:\n${resumeText}`
+        content: `Resume Text:\n${resumeText}\n\n${jobDescription ? `JOB DESCRIPTION:\n${jobDescription}` : ''}`
       }
     ];
 
-    const data = await callGroq(messages);
+    const data = await callAI(messages);
     res.json({ ...data, sourceText: resumeText });
 
   } catch (error) {
     console.error("Analysis Error:", error);
-    
+
     // Fallback response so frontend doesn't crash
     res.status(500).json({
       score: 0,
@@ -160,8 +317,9 @@ app.post('/upload-analyze', upload.single('file'), async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded.' });
     }
-    if (!GROQ_API_KEY) {
-      return res.status(500).json({ error: 'Server misconfiguration: missing GROQ_API_KEY.' });
+    const { jobDescription } = req.body;
+    if (!GOOGLE_API_KEY) {
+      return res.status(500).json({ error: 'Server misconfiguration: missing GOOGLE_API_KEY.' });
     }
 
     const { mimetype, buffer, originalname } = req.file;
@@ -186,10 +344,16 @@ app.post('/upload-analyze', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Could not extract enough text from the file.' });
     }
 
-    const sectionPrompt = [
+    let systemPrompt = `You are "ResuVibe Recruiter AI" — a Gen-Z technical recruiter who screens resumes in under 10 seconds. Your job: Analyze how this resume FEELS to a recruiter, not just what it says.`;
+
+    if (jobDescription) {
+      systemPrompt += `\n\nCONTEXT: The candidate is applying for a specific job. You MUST evaluate the resume against the provided JOB DESCRIPTION.`;
+    }
+
+    const messages = [
       {
         role: 'system',
-        content: `You are "ResuVibe Recruiter AI" — a Gen-Z technical recruiter who screens resumes in under 10 seconds. Your job: Analyze how this resume FEELS to a recruiter, not just what it says.
+        content: `${systemPrompt}
 
 CRITICAL OUTPUT RULES: Output ONLY valid JSON. ALL content MUST be on ONE SINGLE LINE. NO newlines, NO markdown, NO explanations. The JSON must be directly parsable.
 
@@ -220,6 +384,25 @@ For each section (summary, experience, projects, education, skills, certificatio
 3. NEVER remove specific details to make generic statements
 4. KEEP the original structure but improve the WORDING and ACTION VERBS
 5. Add impact language WITHOUT making up numbers (use phrases like "resulting in improved performance" instead of fake "~30% improvement")
+${jobDescription ? '6. TAILOR wording to match the Job Description keywords/tone where honest and applicable.' : ''}
+
+KEYWORD GAP ANALYSIS:
+${jobDescription ? 'Identify top 3-5 HARD SKILLS or CERTIFICATIONS explicitly mentioned in the JD that are completely MISSING from the resume. List them as "missingKeywords".' : 'Do NOT include "missingKeywords" field if no Job Description is provided.'}
+
+BUZZWORD HEATMAP (EXACTLY 3-5 each):
+GREEN FLAGS: Extract 3-5 STRONG action-oriented phrases from the resume that show REAL impact. Look for:
+- Specific metrics/numbers (e.g., "Deployed to 10K users", "Reduced latency by 40%")
+- Leadership/ownership verbs (e.g., "Led team of 5", "Architected system")
+- Concrete deliverables (e.g., "Shipped to production", "Published research paper")
+BAD: ❌ "Worked on projects" GOOD: ✅ "Shipped 3 features to 50K users"
+
+RED FLAGS: Extract 3-5 WEAK/VAGUE buzzwords or phrases that should be removed. Look for:
+- Generic adjectives without proof (e.g., "Hard worker", "Passionate", "Detail-oriented")
+- Passive/weak verbs (e.g., "Responsible for", "Helped with", "Assisted in")
+- Meaningless corporate jargon (e.g., "Synergy", "Think outside the box", "Team player")
+BAD: ❌ "Optimized performance" (if no metric) GOOD: ✅ "Passionate" (generic fluff)
+
+EXAMPLE - BAD vs GOOD suggested rewrites:
 
 EXAMPLE - BAD vs GOOD suggested rewrites:
 
@@ -241,16 +424,21 @@ ORIGINAL: "Presidency College, Bengaluru - Bachelor of Computer Applications Jul
 
 ✅ GOOD (keeps real info): "Bachelor of Computer Applications | Presidency College, Bengaluru (Expected June 2026): Specializing in Data Structures, Algorithms, and Full-Stack Development"
 
+INTERVIEW QUESTIONS (THE INTERROGATOR):
+Act as a SKEPTICAL HIRING MANAGER looking at the specific projects and skills listed. Generate 3 TARGETED technical interview questions to test their knowledge.
+- Rules: NO generic questions ("What is your weakness?"). Questions MUST reference specific technologies/projects from the resume.
+- Hint: Provide a short "Model Answer" logic.
+
 JSON FORMAT (EXACT KEYS):
-{"name": string, "score": number (0-100 integer), "label": string, "description": string, "recruiterSnapshot": string, "overview": string, "sections": {"summary": {"issues": string[], "suggested": string[]}, "experience": {"issues": string[], "suggested": string[]}, "projects": {"issues": string[], "suggested": string[]}, "education": {"issues": string[], "suggested": string[]}, "skills": {"issues": string[], "suggested": string[]}, "certifications": {"issues": string[], "suggested": string[]}}, "roasts": [string, string, string, string], "improvements": [string, string, string]}`
+{"name": string, "score": number (0-100 integer), "label": string, "description": string, "recruiterSnapshot": string, "overview": string, "sections": {"summary": {"issues": string[], "suggested": string[]}, "experience": {"issues": string[], "suggested": string[]}, "projects": {"issues": string[], "suggested": string[]}, "education": {"issues": string[], "suggested": string[]}, "skills": {"issues": string[], "suggested": string[]}, "certifications": {"issues": string[], "suggested": string[]}}, "roasts": [string, string, string, string], "improvements": [string, string, string], "missingKeywords": [string, string, string], "greenFlags": [string, string, string], "redFlags": [string, string, string], "interviewQuestions": [{"question": string, "hint": string}, {"question": string, "hint": string}, {"question": string, "hint": string}]}`
       },
       {
         role: 'user',
-        content: `Resume Text:\n${extractedText}`
+        content: `Resume Text:\n${extractedText}\n\n${jobDescription ? `JOB DESCRIPTION:\n${jobDescription}` : ''}`
       }
     ];
 
-    const data = await callGroq(sectionPrompt);
+    const data = await callAI(messages);
     res.json({ ...data, sourceText: extractedText });
   } catch (error) {
     console.error('Upload Analyze Error:', error);

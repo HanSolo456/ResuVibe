@@ -6,7 +6,7 @@ const BASE_URL = (import.meta as any).env?.VITE_API_URL
 const ANALYZE_URL = `${BASE_URL}/analyze`;
 const UPLOAD_ANALYZE_URL = `${BASE_URL}/upload-analyze`;
 
-export const analyzeResume = async (text: string): Promise<ResumeAnalysis> => {
+export const analyzeResume = async (text: string, jobDescription?: string): Promise<ResumeAnalysis> => {
   if (!text || text.trim().length < 50) {
     throw new Error("Please enter enough text to analyze (at least 50 characters).");
   }
@@ -17,7 +17,7 @@ export const analyzeResume = async (text: string): Promise<ResumeAnalysis> => {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ resumeText: text }),
+      body: JSON.stringify({ resumeText: text, jobDescription }),
     });
 
     if (!response.ok) {
@@ -26,7 +26,7 @@ export const analyzeResume = async (text: string): Promise<ResumeAnalysis> => {
     }
 
     const data = await response.json();
-    
+
     // Ensure the data matches our expected type
     return data as ResumeAnalysis;
   } catch (error: any) {
@@ -35,10 +35,11 @@ export const analyzeResume = async (text: string): Promise<ResumeAnalysis> => {
   }
 };
 
-export const analyzeResumeFile = async (file: File): Promise<ResumeAnalysis> => {
+export const analyzeResumeFile = async (file: File, jobDescription?: string): Promise<ResumeAnalysis> => {
   if (!file) throw new Error('No file provided.');
   const form = new FormData();
   form.append('file', file);
+  if (jobDescription) form.append('jobDescription', jobDescription);
   try {
     const response = await fetch(UPLOAD_ANALYZE_URL, {
       method: 'POST',
