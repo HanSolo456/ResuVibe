@@ -728,10 +728,10 @@ const App: React.FC = () => {
                     </h3>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {result.roasts.map((roast, idx) => (
+                    {result.roasts.filter(r => r && r.trim()).slice(0, 4).map((roast, idx) => (
                       <div key={idx} className="bg-white border-2 border-black p-5 shadow-[4px_4px_0px_0px_#000000]">
                         <div className="flex justify-between mb-2">
-                          <span className="font-mono text-xs font-bold text-[#FF4D00]">ISSUE_0{idx + 1}</span>
+                          <span className="font-mono text-xs font-bold text-[#FF4D00]">ROAST_0{idx + 1}</span>
                         </div>
                         <p className="font-medium">{roast}</p>
                       </div>
@@ -1005,7 +1005,7 @@ const App: React.FC = () => {
                     </div>
 
                     {/* Back (Revealed) */}
-                    <div className="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] bg-white text-black border-2 border-[#FF4D00] flex flex-col p-8 shadow-[8px_8px_0px_0px_#FFF]">
+                    <div className="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] bg-white text-black border-2 border-[#FF4D00] flex flex-col p-8 shadow-[8px_8px_0px_0px_#FFF] overflow-auto">
                       <div className="font-mono text-xs font-bold text-gray-400 mb-4 uppercase">
                         Topic: Technical Deep Dive
                       </div>
