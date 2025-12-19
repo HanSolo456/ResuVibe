@@ -55,6 +55,37 @@
       background-size: 40px 40px;
       background-position: -1px -1px;
     }
+
+    /* Custom Neubrutalist Scrollbar */
+    ::-webkit-scrollbar {
+      width: 12px;
+      height: 12px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: #FDFBF7;
+      border: 2px solid #000000;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #FF4D00;
+      border: 2px solid #000000;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #000000;
+    }
+
+    ::-webkit-scrollbar-corner {
+      background: #FDFBF7;
+      border: 2px solid #000000;
+    }
+
+    /* Firefox scrollbar */
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: #FF4D00 #FDFBF7;
+    }
   </style>
   <script type="importmap">
 {
